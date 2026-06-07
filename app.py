@@ -1,9 +1,15 @@
-import base64, io, os, tempfile
-from flask import Flask, request, jsonify
+import base64, io, os, tempfile, json
+from flask import Flask, request, jsonify, Response
 from access_parser import AccessParser
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 200 * 1024 * 1024  # 200MB
+
+def sanitize(val):
+    if isinstance(val, str):
+        import re
+        return re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', val)
+    return val
 
 @app.route('/parse', methods=['POST'])
 def parse():
@@ -34,11 +40,9 @@ def parse():
             for c in cols:
                 v = data[c][i] if i < len(data[c]) else None
                 if isinstance(v, (bytes, bytearray)):
-                    # Heuristic: detect image header
                     mime = sniff_image(v)
                     if mime:
                         img_id = f"img_{img_counter}"; img_counter += 1
-                        # Strip OLE wrapper if present
                         raw = strip_ole(v, mime)
                         images[img_id] = {
                             "mime": mime,
@@ -48,15 +52,19 @@ def parse():
                     else:
                         row.append(f"<binary {len(v)} bytes>")
                 else:
-                    row.append(v)
+                    row.append(sanitize(v))
             rows.append(row)
         tables_out.append({"name": tname, "columns": cols, "rows": rows})
 
     os.unlink(path)
-    return jsonify({"tables": tables_out, "images": images})
+
+    payload = {"tables": tables_out, "images": images}
+    return Response(
+        json.dumps(payload, ensure_ascii=False, default=str),
+        content_type='application/json; charset=utf-8'
+    )
 
 def sniff_image(b: bytes):
-    # Search within first 2KB for image magic bytes (OLE wraps headers)
     head = b[:2048]
     if b'\xff\xd8\xff' in head: return 'image/jpeg'
     if b'\x89PNG\r\n\x1a\n' in head: return 'image/png'

@@ -1,68 +1,66 @@
-import base64, io, os, tempfile, json
-from flask import Flask, request, jsonify, Response
-from access_parser import AccessParser
+import base64, io, os, tempfile, json, re, traceback
+from flask import Flask, request, jsonify
 
 app = Flask(__name__)
-app.config['MAX_CONTENT_LENGTH'] = 200 * 1024 * 1024  # 200MB
+app.config['MAX_CONTENT_LENGTH'] = 200 * 1024 * 1024
 
 def sanitize(val):
     if isinstance(val, str):
-        import re
         return re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', val)
     return val
 
 @app.route('/parse', methods=['POST'])
 def parse():
-    if 'file' not in request.files:
-        return jsonify({"error": "no file"}), 400
-    f = request.files['file']
-    with tempfile.NamedTemporaryFile(suffix='.accdb', delete=False) as tmp:
-        f.save(tmp.name)
-        path = tmp.name
+    try:
+        if 'file' not in request.files:
+            return jsonify({"error": "no file"}), 400
+        f = request.files['file']
+        with tempfile.NamedTemporaryFile(suffix='.accdb', delete=False) as tmp:
+            f.save(tmp.name)
+            path = tmp.name
 
-    db = AccessParser(path)
-    images = {}
-    tables_out = []
-    img_counter = 0
+        db = AccessParser(path)
+        images = {}
+        tables_out = []
+        img_counter = 0
 
-    for tname in db.catalog:
-        if tname.startswith('MSys'): continue
-        try:
-            data = db.parse_table(tname)
-        except Exception:
-            continue
-        if not data: continue
-        cols = list(data.keys())
-        nrows = max(len(v) for v in data.values()) if data else 0
-        rows = []
-        for i in range(nrows):
-            row = []
-            for c in cols:
-                v = data[c][i] if i < len(data[c]) else None
-                if isinstance(v, (bytes, bytearray)):
-                    mime = sniff_image(v)
-                    if mime:
-                        img_id = f"img_{img_counter}"; img_counter += 1
-                        raw = strip_ole(v, mime)
-                        images[img_id] = {
-                            "mime": mime,
-                            "data_b64": base64.b64encode(raw).decode()
-                        }
-                        row.append({"image_ref": img_id})
+        for tname in db.catalog:
+            if tname.startswith('MSys'): continue
+            try:
+                data = db.parse_table(tname)
+            except Exception:
+                continue
+            if not data: continue
+            cols = list(data.keys())
+            nrows = max(len(v) for v in data.values()) if data else 0
+            rows = []
+            for i in range(nrows):
+                row = []
+                for c in cols:
+                    v = data[c][i] if i < len(data[c]) else None
+                    if isinstance(v, (bytes, bytearray)):
+                        mime = sniff_image(v)
+                        if mime:
+                            img_id = f"img_{img_counter}"; img_counter += 1
+                            raw = strip_ole(v, mime)
+                            images[img_id] = {
+                                "mime": mime,
+                                "data_b64": base64.b64encode(raw).decode()
+                            }
+                            row.append({"image_ref": img_id})
+                        else:
+                            row.append(f"<binary {len(v)} bytes>")
                     else:
-                        row.append(f"<binary {len(v)} bytes>")
-                else:
-                    row.append(sanitize(v))
-            rows.append(row)
-        tables_out.append({"name": tname, "columns": cols, "rows": rows})
+                        row.append(sanitize(v))
+                rows.append(row)
+            tables_out.append({"name": tname, "columns": cols, "rows": rows})
 
-    os.unlink(path)
-
-    payload = {"tables": tables_out, "images": images}
-    return Response(
-        json.dumps(payload, ensure_ascii=False, default=str),
-        content_type='application/json; charset=utf-8'
-    )
+        os.unlink(path)
+        return jsonify({"tables": tables_out, "images": images})
+    except Exception as e:
+        try: os.unlink(path)
+        except: pass
+        return jsonify({"error": traceback.format_exc()}), 500
 
 def sniff_image(b: bytes):
     head = b[:2048]

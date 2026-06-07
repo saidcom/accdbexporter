@@ -1,6 +1,7 @@
 import base64, io, os, tempfile, json, re, traceback
 from flask import Flask, request, jsonify
 from access_parser import AccessParser
+
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 200 * 1024 * 1024
 
@@ -59,6 +60,7 @@ def parse():
         return jsonify({"tables": tables_out, "images": images})
     except Exception as e:
         try: os.unlink(path)
+        except NameError: pass
         except: pass
         return jsonify({"error": traceback.format_exc()}), 500
 
